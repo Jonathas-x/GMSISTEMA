@@ -36,6 +36,18 @@ def garantir_base() -> None:
         criar_base_vazia(DATA_FILE)
 
 
+def normalizar_pago(valor) -> str:
+    texto = str(valor).strip().lower()
+    if texto in ["sim", "s", "true", "1"]:
+        return "Sim"
+    return "Não"
+
+
+def validar_mes_fatura(valor: str) -> bool:
+    valor = str(valor).strip()
+    return bool(pd.Series([valor]).str.match(r"^\d{4}-\d{2}$").iloc[0])
+
+
 def carregar_dados() -> tuple[pd.DataFrame, pd.DataFrame]:
     garantir_base()
     try:
@@ -52,7 +64,7 @@ def carregar_dados() -> tuple[pd.DataFrame, pd.DataFrame]:
     lanc["Cartão"] = lanc["Cartão"].fillna("").astype(str)
     lanc["Parcela"] = lanc["Parcela"].fillna("").astype(str)
     lanc["Mês da fatura"] = lanc["Mês da fatura"].fillna("").astype(str)
-    lanc["Pago"] = lanc["Pago"].fillna("Não").astype(str)
+    lanc["Pago"] = lanc["Pago"].apply(normalizar_pago)
     lanc["Valor (R$)"] = pd.to_numeric(lanc["Valor (R$)"], errors="coerce").fillna(0.0)
     lanc["Data"] = lanc["Data"].astype(str).replace({"NaT": "", "nan": ""}).fillna("")
 
@@ -72,19 +84,26 @@ def gerar_resumo(df: pd.DataFrame) -> pd.DataFrame:
         })
 
     tmp = df.copy()
-    tmp["Pago"] = tmp["Pago"].replace({"sim": "Sim", "não": "Não", "nao": "Não"}).fillna("Não")
+    tmp["Pago"] = tmp["Pago"].apply(normalizar_pago)
     meses_validos = tmp["Mês da fatura"].astype(str).str.match(r"^\d{4}-\d{2}$")
     tmp = tmp[meses_validos].copy()
 
     if tmp.empty:
         return pd.DataFrame(columns=["Mês", "Total gasto", "Total pago", "Total pendente"])
 
-    gasto = tmp.groupby("Mês da fatura", as_index=False)["Valor (R$)"].sum().rename(columns={"Mês da fatura": "Mês", "Valor (R$)": "Total gasto"})
+    gasto = (
+        tmp.groupby("Mês da fatura", as_index=False)["Valor (R$)"]
+        .sum()
+        .rename(columns={"Mês da fatura": "Mês", "Valor (R$)": "Total gasto"})
+    )
+
     pago = (
-        tmp[tmp["Pago"].str.lower() == "sim"]
-        .groupby("Mês da fatura", as_index=False)["Valor (R$)"].sum()
+        tmp[tmp["Pago"] == "Sim"]
+        .groupby("Mês da fatura", as_index=False)["Valor (R$)"]
+        .sum()
         .rename(columns={"Mês da fatura": "Mês", "Valor (R$)": "Total pago"})
     )
+
     resumo = gasto.merge(pago, on="Mês", how="left").fillna(0)
     resumo["Total pendente"] = resumo["Total gasto"] - resumo["Total pago"]
     resumo = resumo.sort_values("Mês").reset_index(drop=True)
@@ -92,8 +111,26 @@ def gerar_resumo(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def salvar_dados(df: pd.DataFrame) -> None:
+    df = df.copy()
+
+    for col in COLUNAS:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[COLUNAS].copy()
+    df["Descrição"] = df["Descrição"].fillna("").astype(str)
+    df["Cartão"] = df["Cartão"].fillna("").astype(str)
+    df["Parcela"] = df["Parcela"].fillna("").astype(str)
+    df["Mês da fatura"] = df["Mês da fatura"].fillna("").astype(str)
+    df["Pago"] = df["Pago"].apply(normalizar_pago)
+    df["Valor (R$)"] = pd.to_numeric(df["Valor (R$)"], errors="coerce").fillna(0.0)
+    df["Data"] = df["Data"].fillna("").astype(str)
+
+    df = df[(df["Descrição"].str.strip() != "") | (df["Valor (R$)"] != 0)].copy()
+
     resumo = gerar_resumo(df)
     config = pd.DataFrame({"Cartões": CARTOES_PADRAO, "Pago": ["Sim", "Não", None, None, None, None]})
+
     with pd.ExcelWriter(DATA_FILE, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Lançamentos", index=False)
         resumo.to_excel(writer, sheet_name="Resumo Mensal", index=False)
@@ -120,7 +157,7 @@ aba1, aba2, aba3 = st.tabs(["Dashboard", "Lançamentos", "Cadastro rápido"])
 
 with aba1:
     total_gasto = float(lancamentos["Valor (R$)"].sum()) if not lancamentos.empty else 0.0
-    total_pago = float(lancamentos.loc[lancamentos["Pago"].str.lower() == "sim", "Valor (R$)"].sum()) if not lancamentos.empty else 0.0
+    total_pago = float(lancamentos.loc[lancamentos["Pago"] == "Sim", "Valor (R$)"].sum()) if not lancamentos.empty else 0.0
     total_pendente = total_gasto - total_pago
 
     c1, c2, c3 = st.columns(3)
@@ -167,27 +204,51 @@ with aba1:
 
 with aba2:
     st.subheader("Editar lançamentos")
+
     if lancamentos.empty:
         st.info("Ainda não há lançamentos cadastrados.")
     else:
+        tabela_edicao = lancamentos.copy()
+        tabela_edicao["Excluir"] = False
+
         editado = st.data_editor(
-            lancamentos,
+            tabela_edicao,
             use_container_width=True,
             num_rows="dynamic",
             hide_index=True,
             column_config={
                 "Pago": st.column_config.SelectboxColumn("Pago", options=STATUS_PADRAO, required=True),
-                "Cartão": st.column_config.SelectboxColumn("Cartão", options=sorted(set(CARTOES_PADRAO + lancamentos["Cartão"].astype(str).tolist()))),
+                "Cartão": st.column_config.SelectboxColumn(
+                    "Cartão",
+                    options=sorted(set(CARTOES_PADRAO + lancamentos["Cartão"].astype(str).tolist()))
+                ),
                 "Valor (R$)": st.column_config.NumberColumn("Valor (R$)", format="%.2f", min_value=0.0),
                 "Mês da fatura": st.column_config.TextColumn("Mês da fatura", help="Formato: AAAA-MM"),
+                "Excluir": st.column_config.CheckboxColumn("Excluir", help="Marque para apagar a linha"),
             },
         )
+
         c1, c2 = st.columns(2)
+
         if c1.button("Salvar alterações", type="primary"):
-            salvar_dados(editado)
-            st.success("Dados salvos no Excel com sucesso.")
+            excluir_marcados = editado["Excluir"].fillna(False)
+            df_final = editado.loc[~excluir_marcados, COLUNAS].copy()
+
+            meses_invalidos = df_final["Mês da fatura"].astype(str).str.strip()
+            meses_invalidos = meses_invalidos[(meses_invalidos != "") & (~meses_invalidos.str.match(r"^\d{4}-\d{2}$"))]
+
+            if not meses_invalidos.empty:
+                st.error("Existem meses de fatura inválidos. Use o formato AAAA-MM.")
+            else:
+                salvar_dados(df_final)
+                st.success("Dados salvos com sucesso. Itens marcados foram apagados.")
+                st.rerun()
+
         if c2.button("Exportar Excel atualizado"):
-            salvar_dados(editado)
+            excluir_marcados = editado["Excluir"].fillna(False)
+            df_final = editado.loc[~excluir_marcados, COLUNAS].copy()
+            salvar_dados(df_final)
+
             with open(DATA_FILE, "rb") as f:
                 st.download_button(
                     label="Baixar arquivo Excel",
@@ -198,6 +259,7 @@ with aba2:
 
 with aba3:
     st.subheader("Novo lançamento")
+
     with st.form("novo_lancamento"):
         c1, c2, c3 = st.columns(3)
         data = c1.text_input("Data", placeholder="Ex.: 08/04/2026")
@@ -217,6 +279,8 @@ with aba3:
             st.error("Preencha a descrição.")
         elif not mes_fatura.strip():
             st.error("Preencha o mês da fatura no formato AAAA-MM.")
+        elif not validar_mes_fatura(mes_fatura):
+            st.error("Mês da fatura inválido. Use o formato AAAA-MM.")
         else:
             novo = pd.DataFrame([
                 {
@@ -229,6 +293,7 @@ with aba3:
                     "Pago": pago,
                 }
             ])
+
             atualizado = pd.concat([lancamentos, novo], ignore_index=True)
             salvar_dados(atualizado)
             st.success("Lançamento adicionado e salvo no Excel.")
