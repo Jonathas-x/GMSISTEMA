@@ -58,8 +58,8 @@ def carregar_dados() -> tuple[pd.DataFrame, pd.DataFrame]:
     for col in COLUNAS:
         if col not in lanc.columns:
             lanc[col] = None
-    lanc = lanc[COLUNAS].copy()
 
+    lanc = lanc[COLUNAS].copy()
     lanc["Descrição"] = lanc["Descrição"].fillna("").astype(str)
     lanc["Cartão"] = lanc["Cartão"].fillna("").astype(str)
     lanc["Parcela"] = lanc["Parcela"].fillna("").astype(str)
@@ -141,36 +141,97 @@ def moeda(valor: float) -> str:
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-st.set_page_config(page_title="Controle Financeiro", page_icon="💳", layout="wide")
-st.title("💳 Sistema de Controle Financeiro")
-st.caption("Base de dados em Excel (.xlsx)")
+def eh_mobile() -> bool:
+    # aproximação simples para adaptar layout
+    return st.session_state.get("mobile_view", True)
+
+
+st.set_page_config(
+    page_title="Controle Financeiro",
+    page_icon="💳",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
+
+st.markdown("""
+<style>
+.block-container {
+    padding-top: 1rem;
+    padding-bottom: 2rem;
+    max-width: 780px;
+}
+div[data-testid="stMetric"] {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.03);
+}
+div.stButton > button {
+    width: 100%;
+    border-radius: 10px;
+    height: 44px;
+}
+div[data-testid="stDownloadButton"] > button {
+    width: 100%;
+    border-radius: 10px;
+    height: 44px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("💳 Controle Financeiro")
+st.caption("Sistema com base em Excel")
 
 lancamentos, resumo = carregar_dados()
 
 with st.sidebar:
-    st.header("Configurações")
-    st.write(f"Arquivo em uso: `{DATA_FILE.name}`")
+    st.header("Opções")
+    st.checkbox("Modo mobile", value=True, key="mobile_view")
+    st.write(f"Arquivo: `{DATA_FILE.name}`")
     if st.button("Recarregar dados"):
         st.rerun()
 
-aba1, aba2, aba3 = st.tabs(["Dashboard", "Lançamentos", "Cadastro rápido"])
+mobile = eh_mobile()
+
+aba1, aba2, aba3 = st.tabs(["Dashboard", "Lançamentos", "Novo"])
 
 with aba1:
     total_gasto = float(lancamentos["Valor (R$)"].sum()) if not lancamentos.empty else 0.0
     total_pago = float(lancamentos.loc[lancamentos["Pago"] == "Sim", "Valor (R$)"].sum()) if not lancamentos.empty else 0.0
     total_pendente = total_gasto - total_pago
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total gasto", moeda(total_gasto))
-    c2.metric("Total pago", moeda(total_pago))
-    c3.metric("Total pendente", moeda(total_pendente))
+    if mobile:
+        st.metric("Total gasto", moeda(total_gasto))
+        st.metric("Total pago", moeda(total_pago))
+        st.metric("Total pendente", moeda(total_pendente))
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total gasto", moeda(total_gasto))
+        c2.metric("Total pago", moeda(total_pago))
+        c3.metric("Total pendente", moeda(total_pendente))
 
-    fc1, fc2, fc3 = st.columns(3)
-    cartoes = ["Todos"] + sorted([c for c in lancamentos["Cartão"].dropna().unique().tolist() if str(c).strip()])
-    filtro_cartao = fc1.selectbox("Filtrar por cartão", cartoes)
-    meses = ["Todos"] + sorted([m for m in lancamentos["Mês da fatura"].dropna().unique().tolist() if str(m).strip()])
-    filtro_mes = fc2.selectbox("Filtrar por mês", meses)
-    filtro_pago = fc3.selectbox("Status", ["Todos", "Sim", "Não"])
+    st.subheader("Filtros")
+
+    if mobile:
+        filtro_cartao = st.selectbox(
+            "Cartão",
+            ["Todos"] + sorted([c for c in lancamentos["Cartão"].dropna().unique().tolist() if str(c).strip()])
+        )
+        filtro_mes = st.selectbox(
+            "Mês",
+            ["Todos"] + sorted([m for m in lancamentos["Mês da fatura"].dropna().unique().tolist() if str(m).strip()])
+        )
+        filtro_pago = st.selectbox("Status", ["Todos", "Sim", "Não"])
+    else:
+        fc1, fc2, fc3 = st.columns(3)
+        filtro_cartao = fc1.selectbox(
+            "Cartão",
+            ["Todos"] + sorted([c for c in lancamentos["Cartão"].dropna().unique().tolist() if str(c).strip()])
+        )
+        filtro_mes = fc2.selectbox(
+            "Mês",
+            ["Todos"] + sorted([m for m in lancamentos["Mês da fatura"].dropna().unique().tolist() if str(m).strip()])
+        )
+        filtro_pago = fc3.selectbox("Status", ["Todos", "Sim", "Não"])
 
     filtrado = lancamentos.copy()
     if filtro_cartao != "Todos":
@@ -193,17 +254,24 @@ with aba1:
 
     if not resumo.empty:
         grafico = resumo.set_index("Mês")[["Total gasto", "Total pago", "Total pendente"]]
-        st.bar_chart(grafico)
+        st.bar_chart(grafico, use_container_width=True)
 
-    st.subheader("Lançamentos filtrados")
-    st.dataframe(
-        filtrado.style.format({"Valor (R$)": lambda x: moeda(float(x))}),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.subheader("Lançamentos")
+    if filtrado.empty:
+        st.info("Nenhum lançamento encontrado.")
+    else:
+        for i, row in filtrado.reset_index(drop=True).iterrows():
+            with st.container(border=True):
+                st.markdown(f"**{row['Descrição'] or 'Sem descrição'}**")
+                st.write(f"Valor: {moeda(float(row['Valor (R$)']))}")
+                st.write(f"Cartão: {row['Cartão'] or '-'}")
+                st.write(f"Data: {row['Data'] or '-'}")
+                st.write(f"Fatura: {row['Mês da fatura'] or '-'}")
+                st.write(f"Parcela: {row['Parcela'] or '-'}")
+                st.write(f"Pago: {row['Pago'] or '-'}")
 
 with aba2:
-    st.subheader("Editar lançamentos")
+    st.subheader("Editar e apagar lançamentos")
 
     if lancamentos.empty:
         st.info("Ainda não há lançamentos cadastrados.")
@@ -216,21 +284,23 @@ with aba2:
             use_container_width=True,
             num_rows="dynamic",
             hide_index=True,
+            column_order=["Data", "Descrição", "Cartão", "Parcela", "Valor (R$)", "Mês da fatura", "Pago", "Excluir"],
             column_config={
-                "Pago": st.column_config.SelectboxColumn("Pago", options=STATUS_PADRAO, required=True),
+                "Data": st.column_config.TextColumn("Data", width="small"),
+                "Descrição": st.column_config.TextColumn("Descrição", width="medium"),
                 "Cartão": st.column_config.SelectboxColumn(
                     "Cartão",
                     options=sorted(set(CARTOES_PADRAO + lancamentos["Cartão"].astype(str).tolist()))
                 ),
+                "Parcela": st.column_config.TextColumn("Parcela", width="small"),
                 "Valor (R$)": st.column_config.NumberColumn("Valor (R$)", format="%.2f", min_value=0.0),
-                "Mês da fatura": st.column_config.TextColumn("Mês da fatura", help="Formato: AAAA-MM"),
-                "Excluir": st.column_config.CheckboxColumn("Excluir", help="Marque para apagar a linha"),
+                "Mês da fatura": st.column_config.TextColumn("Mês da fatura", help="Formato: AAAA-MM", width="small"),
+                "Pago": st.column_config.SelectboxColumn("Pago", options=STATUS_PADRAO, required=True),
+                "Excluir": st.column_config.CheckboxColumn("Excluir", help="Marque para apagar"),
             },
         )
 
-        c1, c2 = st.columns(2)
-
-        if c1.button("Salvar alterações", type="primary"):
+        if st.button("Salvar alterações", type="primary"):
             excluir_marcados = editado["Excluir"].fillna(False)
             df_final = editado.loc[~excluir_marcados, COLUNAS].copy()
 
@@ -238,49 +308,41 @@ with aba2:
             meses_invalidos = meses_invalidos[(meses_invalidos != "") & (~meses_invalidos.str.match(r"^\d{4}-\d{2}$"))]
 
             if not meses_invalidos.empty:
-                st.error("Existem meses de fatura inválidos. Use o formato AAAA-MM.")
+                st.error("Existem meses inválidos. Use AAAA-MM.")
             else:
                 salvar_dados(df_final)
-                st.success("Dados salvos com sucesso. Itens marcados foram apagados.")
+                st.success("Alterações salvas com sucesso.")
                 st.rerun()
 
-        if c2.button("Exportar Excel atualizado"):
-            excluir_marcados = editado["Excluir"].fillna(False)
-            df_final = editado.loc[~excluir_marcados, COLUNAS].copy()
-            salvar_dados(df_final)
-
-            with open(DATA_FILE, "rb") as f:
-                st.download_button(
-                    label="Baixar arquivo Excel",
-                    data=f.read(),
-                    file_name=DATA_FILE.name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+        with open(DATA_FILE, "rb") as f:
+            st.download_button(
+                label="Baixar Excel atualizado",
+                data=f.read(),
+                file_name=DATA_FILE.name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 with aba3:
-    st.subheader("Novo lançamento")
+    st.subheader("Adicionar lançamento")
 
     with st.form("novo_lancamento"):
-        c1, c2, c3 = st.columns(3)
-        data = c1.text_input("Data", placeholder="Ex.: 08/04/2026")
-        descricao = c2.text_input("Descrição")
-        cartao = c3.selectbox("Cartão", CARTOES_PADRAO)
+        data = st.text_input("Data", placeholder="Ex.: 08/04/2026")
+        descricao = st.text_input("Descrição")
+        cartao = st.selectbox("Cartão", CARTOES_PADRAO)
+        parcela = st.text_input("Parcela", placeholder="Ex.: 1/3")
+        valor = st.number_input("Valor (R$)", min_value=0.0, step=1.0, format="%.2f")
+        mes_fatura = st.text_input("Mês da fatura", placeholder="AAAA-MM")
+        pago = st.selectbox("Pago", STATUS_PADRAO)
 
-        c4, c5, c6, c7 = st.columns(4)
-        parcela = c4.text_input("Parcela", placeholder="Ex.: 1/3")
-        valor = c5.number_input("Valor (R$)", min_value=0.0, step=1.0, format="%.2f")
-        mes_fatura = c6.text_input("Mês da fatura", placeholder="AAAA-MM")
-        pago = c7.selectbox("Pago", STATUS_PADRAO)
-
-        enviar = st.form_submit_button("Adicionar lançamento", type="primary")
+        enviar = st.form_submit_button("Adicionar lançamento")
 
     if enviar:
         if not descricao.strip():
             st.error("Preencha a descrição.")
         elif not mes_fatura.strip():
-            st.error("Preencha o mês da fatura no formato AAAA-MM.")
+            st.error("Preencha o mês da fatura.")
         elif not validar_mes_fatura(mes_fatura):
-            st.error("Mês da fatura inválido. Use o formato AAAA-MM.")
+            st.error("Mês da fatura inválido. Use AAAA-MM.")
         else:
             novo = pd.DataFrame([
                 {
@@ -293,8 +355,7 @@ with aba3:
                     "Pago": pago,
                 }
             ])
-
             atualizado = pd.concat([lancamentos, novo], ignore_index=True)
             salvar_dados(atualizado)
-            st.success("Lançamento adicionado e salvo no Excel.")
+            st.success("Lançamento adicionado com sucesso.")
             st.rerun()
