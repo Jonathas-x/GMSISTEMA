@@ -48,6 +48,45 @@ def validar_mes_fatura(valor: str) -> bool:
     return bool(pd.Series([valor]).str.match(r"^\d{4}-\d{2}$").iloc[0])
 
 
+def formatar_parcela(valor) -> str:
+    texto = str(valor).strip()
+
+    if texto in ["", "nan", "None"]:
+        return ""
+
+    texto = texto.replace(" ", "").replace("\\", "/").replace("-", "/")
+
+    if "/" in texto:
+        partes = texto.split("/")
+        if len(partes) == 2:
+            try:
+                atual = int(float(partes[0]))
+                total = int(float(partes[1]))
+                return f"{atual:02d}/{total:02d}"
+            except ValueError:
+                return texto
+
+    try:
+        numero = int(float(texto))
+        return f"{numero:02d}/{numero:02d}"
+    except ValueError:
+        return texto
+
+
+def resumo_linha_lancamento(row) -> str:
+    cartao = row["Cartão"] or "-"
+    fatura = row["Mês da fatura"] or "-"
+    parcela = formatar_parcela(row["Parcela"])
+    pago = row["Pago"] or "Não"
+
+    itens = [f"💳 {cartao}", f"📅 {fatura}"]
+    if parcela:
+        itens.append(f"🔢 {parcela}")
+    itens.append(f"✅ {pago}")
+
+    return " • ".join(itens)
+
+
 def carregar_dados() -> tuple[pd.DataFrame, pd.DataFrame]:
     garantir_base()
     try:
@@ -62,7 +101,7 @@ def carregar_dados() -> tuple[pd.DataFrame, pd.DataFrame]:
     lanc = lanc[COLUNAS].copy()
     lanc["Descrição"] = lanc["Descrição"].fillna("").astype(str)
     lanc["Cartão"] = lanc["Cartão"].fillna("").astype(str)
-    lanc["Parcela"] = lanc["Parcela"].fillna("").astype(str)
+    lanc["Parcela"] = lanc["Parcela"].fillna("").apply(formatar_parcela)
     lanc["Mês da fatura"] = lanc["Mês da fatura"].fillna("").astype(str)
     lanc["Pago"] = lanc["Pago"].apply(normalizar_pago)
     lanc["Valor (R$)"] = pd.to_numeric(lanc["Valor (R$)"], errors="coerce").fillna(0.0)
@@ -120,7 +159,7 @@ def salvar_dados(df: pd.DataFrame) -> None:
     df = df[COLUNAS].copy()
     df["Descrição"] = df["Descrição"].fillna("").astype(str)
     df["Cartão"] = df["Cartão"].fillna("").astype(str)
-    df["Parcela"] = df["Parcela"].fillna("").astype(str)
+    df["Parcela"] = df["Parcela"].fillna("").apply(formatar_parcela)
     df["Mês da fatura"] = df["Mês da fatura"].fillna("").astype(str)
     df["Pago"] = df["Pago"].apply(normalizar_pago)
     df["Valor (R$)"] = pd.to_numeric(df["Valor (R$)"], errors="coerce").fillna(0.0)
@@ -142,7 +181,6 @@ def moeda(valor: float) -> str:
 
 
 def eh_mobile() -> bool:
-    # aproximação simples para adaptar layout
     return st.session_state.get("mobile_view", True)
 
 
@@ -174,6 +212,18 @@ div[data-testid="stDownloadButton"] > button {
     width: 100%;
     border-radius: 10px;
     height: 44px;
+}
+.linha-resumo {
+    font-size: 0.95rem;
+    line-height: 1.5;
+    word-break: normal;
+    overflow-wrap: break-word;
+}
+.valor-direita {
+    text-align: right;
+    font-weight: 700;
+    white-space: nowrap;
+    margin-top: 4px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -260,15 +310,26 @@ with aba1:
     if filtrado.empty:
         st.info("Nenhum lançamento encontrado.")
     else:
-        for i, row in filtrado.reset_index(drop=True).iterrows():
+        for _, row in filtrado.reset_index(drop=True).iterrows():
+            descricao = row["Descrição"] or "Sem descrição"
+            data_txt = row["Data"] or "-"
+            linha_resumo = resumo_linha_lancamento(row)
+            valor_formatado = moeda(float(row["Valor (R$)"]))
+
             with st.container(border=True):
-                st.markdown(f"**{row['Descrição'] or 'Sem descrição'}**")
-                st.write(f"Valor: {moeda(float(row['Valor (R$)']))}")
-                st.write(f"Cartão: {row['Cartão'] or '-'}")
-                st.write(f"Data: {row['Data'] or '-'}")
-                st.write(f"Fatura: {row['Mês da fatura'] or '-'}")
-                st.write(f"Parcela: {row['Parcela'] or '-'}")
-                st.write(f"Pago: {row['Pago'] or '-'}")
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    st.markdown(f"**{descricao}**")
+                    st.caption(data_txt)
+                    st.markdown(
+                        f"<div class='linha-resumo'>{linha_resumo}</div>",
+                        unsafe_allow_html=True,
+                    )
+                with c2:
+                    st.markdown(
+                        f"<div class='valor-direita'>{valor_formatado}</div>",
+                        unsafe_allow_html=True,
+                    )
 
 with aba2:
     st.subheader("Editar e apagar lançamentos")
@@ -292,7 +353,7 @@ with aba2:
                     "Cartão",
                     options=sorted(set(CARTOES_PADRAO + lancamentos["Cartão"].astype(str).tolist()))
                 ),
-                "Parcela": st.column_config.TextColumn("Parcela", width="small"),
+                "Parcela": st.column_config.TextColumn("Parcela", help="Formato: 01/01", width="small"),
                 "Valor (R$)": st.column_config.NumberColumn("Valor (R$)", format="%.2f", min_value=0.0),
                 "Mês da fatura": st.column_config.TextColumn("Mês da fatura", help="Formato: AAAA-MM", width="small"),
                 "Pago": st.column_config.SelectboxColumn("Pago", options=STATUS_PADRAO, required=True),
@@ -303,6 +364,7 @@ with aba2:
         if st.button("Salvar alterações", type="primary"):
             excluir_marcados = editado["Excluir"].fillna(False)
             df_final = editado.loc[~excluir_marcados, COLUNAS].copy()
+            df_final["Parcela"] = df_final["Parcela"].fillna("").apply(formatar_parcela)
 
             meses_invalidos = df_final["Mês da fatura"].astype(str).str.strip()
             meses_invalidos = meses_invalidos[(meses_invalidos != "") & (~meses_invalidos.str.match(r"^\d{4}-\d{2}$"))]
@@ -329,7 +391,7 @@ with aba3:
         data = st.text_input("Data", placeholder="Ex.: 08/04/2026")
         descricao = st.text_input("Descrição")
         cartao = st.selectbox("Cartão", CARTOES_PADRAO)
-        parcela = st.text_input("Parcela", placeholder="Ex.: 1/3")
+        parcela = st.text_input("Parcela", placeholder="Ex.: 01/03")
         valor = st.number_input("Valor (R$)", min_value=0.0, step=1.0, format="%.2f")
         mes_fatura = st.text_input("Mês da fatura", placeholder="AAAA-MM")
         pago = st.selectbox("Pago", STATUS_PADRAO)
@@ -349,7 +411,7 @@ with aba3:
                     "Data": data.strip(),
                     "Descrição": descricao.strip(),
                     "Cartão": cartao,
-                    "Parcela": parcela.strip(),
+                    "Parcela": formatar_parcela(parcela),
                     "Valor (R$)": float(valor),
                     "Mês da fatura": mes_fatura.strip(),
                     "Pago": pago,
